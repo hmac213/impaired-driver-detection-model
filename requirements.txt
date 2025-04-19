@@ -1,0 +1,10 @@
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+scipy>=1.10.0
+torch>=2.0.0
+torchvision>=0.15.0
+filterpy>=1.4.5  # for Kalman filtering
+scikit-image>=0.21.0
+tqdm>=4.65.0
+pandas>=2.0.0 
