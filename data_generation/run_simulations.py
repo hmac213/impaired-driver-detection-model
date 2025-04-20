@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from driving_agent import Agent, Road
+from data_generation.driving_agent import Agent, Road
 import random
 from tqdm import tqdm
 
