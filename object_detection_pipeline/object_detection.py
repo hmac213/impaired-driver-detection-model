@@ -159,17 +159,20 @@ class VehicleTracker:
 
 def process_video(video_path, show_visualization=False):
     """Process video and detect vehicles using YOLO."""
-    # Perform setup steps
-    vehicle_detector, lane_detector, video_info = setup_processing(video_path)
+    # Preprocess video to 10 fps first
+    processed_video_path = preprocess_video(str(video_path))
+    
+    # Perform setup steps with the preprocessed video
+    vehicle_detector, lane_detector, video_info = setup_processing(processed_video_path)
     
     # Initialize tracker
     tracker = VehicleTracker()
     all_track_data = []  # List to store track data for CSV output
     
     # Open video
-    cap = cv2.VideoCapture(str(video_path))
+    cap = cv2.VideoCapture(processed_video_path)
     if not cap.isOpened():
-        raise ValueError(f"Could not open video file: {video_path}")
+        raise ValueError(f"Could not open video file: {processed_video_path}")
     
     # Initialize output video writer
     video_name = Path(video_path).stem
@@ -179,28 +182,19 @@ def process_video(video_path, show_visualization=False):
         print(f"Warning: Could not create video writer for {output_video_path}. Visualization will not be saved.")
         out = None
     
-    # Set target processing frame rate (e.g., 10 fps)
-    target_fps = 10
-    frame_skip = int(video_info['fps'] / target_fps)
-    if frame_skip < 1:
-        frame_skip = 1
-    
-    print(f"Original FPS: {video_info['fps']}, Processing at {target_fps} FPS (skipping {frame_skip-1} frames)")
-    
     # Process frames
-    pbar = tqdm(total=video_info['total_frames'] // frame_skip, desc="Processing frames")
+    pbar = tqdm(total=video_info['total_frames'], desc="Processing frames")
     frame_idx = 0
-    processed_frame_idx = 0
+    
+    # Check if we have a single lane (two lines)
+    single_lane = len(lane_detector.lanes) == 2
+    if single_lane:
+        print("Single lane detected (two lines) - all coordinates will be relative to lane boundaries")
     
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
-            
-        # Skip frames to achieve target FPS
-        if frame_idx % frame_skip != 0:
-            frame_idx += 1
-            continue
             
         # Detect vehicles
         detections = vehicle_detector.detect(frame)
@@ -216,22 +210,66 @@ def process_video(video_path, show_visualization=False):
                 continue
                 
             # Get the normalized position within the lane
-            relative_y, _ = lane_detector.get_lane_position(det['center'])
+            if single_lane:
+                # For single lane with two lines, calculate y position relative to both lines
+                left_lane, right_lane = lane_detector.lanes
+                
+                # Get points along both lane lines
+                y_points = np.linspace(0, video_info['frame_height'], 100)
+                left_x_points = np.polyval(left_lane, y_points)
+                right_x_points = np.polyval(right_lane, y_points)
+                
+                # Find the closest point on each lane line to the vehicle
+                vehicle_point = np.array(det['center'])
+                left_points = np.column_stack((left_x_points, y_points))
+                right_points = np.column_stack((right_x_points, y_points))
+                
+                # Calculate distances to both lines
+                left_distances = np.linalg.norm(left_points - vehicle_point, axis=1)
+                right_distances = np.linalg.norm(right_points - vehicle_point, axis=1)
+                
+                closest_left_idx = np.argmin(left_distances)
+                closest_right_idx = np.argmin(right_distances)
+                
+                closest_left_point = left_points[closest_left_idx]
+                closest_right_point = right_points[closest_right_idx]
+                
+                # Calculate the lane width at this point
+                lane_width = np.linalg.norm(closest_right_point - closest_left_point)
+                
+                # Calculate the perpendicular distance from the left lane line
+                left_vector = left_points[min(closest_left_idx + 1, len(left_points)-1)] - left_points[max(closest_left_idx - 1, 0)]
+                left_vector = left_vector / np.linalg.norm(left_vector)
+                perpendicular_vector = np.array([-left_vector[1], left_vector[0]])
+                
+                # Calculate signed distance from left lane line
+                distance_from_left = np.dot(vehicle_point - closest_left_point, perpendicular_vector)
+                
+                # Calculate y position where:
+                # 0 = left lane line
+                # 1 = right lane line
+                # < 0 = beyond left lane line
+                # > 1 = beyond right lane line
+                relative_y = distance_from_left / lane_width
+            else:
+                # Use existing lane position calculation for multiple lanes
+                relative_y, _ = lane_detector.get_lane_position(det['center'])
             
             # Add position information to detection
             det['x'] = relative_x
             det['y'] = relative_y
+            det['frame'] = frame_idx
             processed_detections.append(det)
             
         # Update tracks
-        updated_detections = tracker.update(processed_detections, processed_frame_idx)
+        updated_detections = tracker.update(processed_detections, frame_idx)
         
         # Add track data
         for det in updated_detections:
-            time_since_start = (processed_frame_idx / target_fps) - tracker.track_start_times[det['track_id']]
+            time_since_start = (frame_idx / 10.0) - tracker.track_start_times[det['track_id']]
             all_track_data.append({
                 'track_id': det['track_id'],
-                'frame': processed_frame_idx,
+                'frame': frame_idx,
                 'time': time_since_start,
                 'x': det['x'],
                 'y': det['y'],
@@ -279,7 +317,6 @@ def process_video(video_path, show_visualization=False):
                 out.write(vis_frame)
                 
         frame_idx += 1
-        processed_frame_idx += 1
         pbar.update(1)
         
     # Clean up
