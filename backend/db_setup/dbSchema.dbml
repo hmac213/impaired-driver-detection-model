@@ -1,0 +1,100 @@
+// Driver Detection System Database Schema
+Project DriverDetectionSystem {
+  database_type: 'MongoDB'
+  Note: 'Database schema for the impaired driver detection and tracking system'
+}
+
+// Reports Collection
+Table reports {
+  report_id String [pk, note: 'Unique identifier for the report']
+  latitude Float [note: 'Geographic latitude of the report']
+  longitude Float [note: 'Geographic longitude of the report']
+  probability Float [note: 'Probability score of impairment detection']
+  descriptor String [note: 'Description of impairment type (e.g., drunk_driving, texting, drowsy)']
+  confirm_bool String [note: 'Status of report confirmation: "null", "safe", or "impaired"']
+  tracked_movements JSON [note: 'JSON object containing movement tracking data']
+  created_at DateTime [note: 'Timestamp when the report was created']
+  updated_at DateTime [note: 'Timestamp when the report was last updated']
+
+  Note: 'Stores reports of potentially impaired drivers detected by the system'
+}
+
+// Movement Tracking Collection
+Table movement_tracking {
+  tracking_id String [pk, note: 'Unique identifier for the tracking record']
+  report_id String [unique, not null, note: 'Reference to the associated report']
+  confirm_bool String [note: 'Status value: "null", "safe", or "impaired"']
+  movement_tracking JSON [note: 'JSON object containing detailed movement tracking data']
+  created_at DateTime [note: 'Timestamp when the tracking record was created']
+  updated_at DateTime [note: 'Timestamp when the tracking record was last updated']
+
+  Note: 'Stores detailed movement tracking data for reports'
+}
+
+// Camera Collection
+Table camera_db {
+  _id ObjectId [pk, note: 'MongoDB document ID']
+  camera_id String [not null, note: 'Camera identifier']
+  track_id String [note: 'Tracking identifier for the vehicle']
+  class String [note: 'Vehicle class (e.g., car, motorcycle, bus, truck)']
+  frame_number Integer [note: 'Frame number in the video sequence']
+  x Float [note: 'X-coordinate of vehicle position']
+  y Float [note: 'Y-coordinate of vehicle position']
+  width Float [note: 'Width of vehicle bounding box']
+  height Float [note: 'Height of vehicle bounding box']
+  timestamp DateTime [note: 'Timestamp of the observation']
+  calibration_id String [note: 'Reference to the associated camera calibration']
+
+  Note: 'Stores camera detection data including vehicle tracking information'
+}
+
+// Camera Calibration Collection
+Table camera_calibration {
+  calibration_id String [pk, note: 'Unique identifier for the calibration data']
+  camera_id String [not null, note: 'Reference to the associated camera']
+  location_name String [note: 'Name of the location where camera is installed']
+  timestamp DateTime [note: 'Timestamp when calibration was performed']
+  created_at DateTime [note: 'Timestamp when the calibration record was created']
+  is_active Boolean [note: 'Flag indicating if this is the active calibration for the camera']
+  
+  // Nested JSON structures
+  lane_data JSON [note: 'Contains lane_polynomials and lane_points arrays']
+  roi_data JSON [note: 'Contains rectangle_points, entrance_side, exit_side, world_width, and world_length']
+  homography_data JSON [note: 'Contains homography matrix and inverse matrix']
+  reference_point JSON [note: 'Contains rel_x and rel_y for vehicle detection reference point']
+
+  Note: 'Stores camera calibration data including lane boundaries, ROI, homography matrices, and reference points'
+}
+
+// RBAC (Role-Based Access Control) Collection
+Table rbac {
+  _id ObjectId [pk, note: 'MongoDB document ID']
+  user_id String [unique, not null, note: 'Unique identifier for the user']
+  email String [unique, not null, note: 'User email address, used for login']
+  password_hash String [not null, note: 'Hashed password for authentication']
+  role String [not null, note: 'User role (e.g., admin, operator, viewer)']
+  name String [note: 'User full name']
+  created_at DateTime [note: 'Timestamp when the user was created']
+  updated_at DateTime [note: 'Timestamp when the user was last updated']
+
+  Note: 'Stores user authentication and authorization data'
+}
+
+// Relationships
+Ref: movement_tracking.report_id > reports.report_id [delete: cascade]
+Ref: camera_db.calibration_id > camera_calibration.calibration_id
+
+// TableGroups for logical organization
+TableGroup core_data {
+  reports
+  movement_tracking
+}
+
+TableGroup camera_components {
+  camera_db
+  camera_calibration
+}
+
+TableGroup authentication {
+  rbac
+} 

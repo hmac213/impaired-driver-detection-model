@@ -3,6 +3,8 @@ from pymongo import MongoClient
 import pandas as pd
 from pathlib import Path
 import json
+import uuid
+import datetime
 
 app = Flask(__name__)
 
@@ -13,6 +15,12 @@ MONGO_URI = "mongodb+srv://Temp:hack@cluster0.lhazyyp.mongodb.net/DriverData?ret
 client = MongoClient(MONGO_URI)
 db = client["DriverData"]
 camera_collection = db["camera_db"]
+calibration_collection = db["camera_calibration"]
+
+# Create indexes for calibration collection
+calibration_collection.create_index("calibration_id", unique=True)
+calibration_collection.create_index("camera_id")
+calibration_collection.create_index([("camera_id", 1), ("is_active", 1)])
 
 @app.route("/")
 def check_connection():
@@ -254,6 +262,191 @@ def get_stats():
         return jsonify({
             "status": "error",
             "message": f"Error retrieving stats: {str(e)}"
+        }), 500
+
+@app.route("/store-calibration", methods=["POST"])
+def store_calibration():
+    """Store lane details, ROI, homography, and reference point calibration data for a camera."""
+    try:
+        # Get data from request
+        data = request.json
+        
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No data provided"
+            }), 400
+        
+        # Check required fields
+        if 'camera_id' not in data:
+            return jsonify({
+                "status": "error",
+                "message": "camera_id is required"
+            }), 400
+        
+        # Create a calibration document
+        calibration_id = str(uuid.uuid4())
+        timestamp = datetime.datetime.utcnow()
+        
+        # Extract data or use defaults
+        location_name = data.get('location_name', 'Unknown Location')
+        
+        calibration_data = {
+            "calibration_id": calibration_id,
+            "camera_id": data['camera_id'],
+            "location_name": location_name,
+            "timestamp": timestamp,
+            "created_at": timestamp,
+            
+            # Lane data
+            "lane_data": {
+                "lane_polynomials": data.get('lane_polynomials', []),
+                "lane_points": data.get('lane_points', [])
+            },
+            
+            # ROI data
+            "roi_data": {
+                "rectangle_points": data.get('rectangle_points', []),
+                "entrance_side": data.get('entrance_side', 0),
+                "exit_side": data.get('exit_side', 2),
+                "world_width": data.get('world_width', 3.7),
+                "world_length": data.get('world_length', 30.0)
+            },
+            
+            # Homography data
+            "homography_data": {
+                "matrix": data.get('homography_matrix', []),
+                "inverse_matrix": data.get('inverse_homography_matrix', [])
+            },
+            
+            # Reference point for vehicle detection
+            "reference_point": {
+                "rel_x": data.get('reference_point_x', 0.5),
+                "rel_y": data.get('reference_point_y', 1.0)
+            },
+            
+            # Set this calibration as active by default
+            "is_active": True
+        }
+        
+        # Deactivate previous active calibrations for this camera
+        calibration_collection.update_many(
+            {"camera_id": data['camera_id'], "is_active": True},
+            {"$set": {"is_active": False}}
+        )
+        
+        # Insert the new calibration
+        result = calibration_collection.insert_one(calibration_data)
+        
+        if result.acknowledged:
+            return jsonify({
+                "status": "success",
+                "message": "Calibration data stored successfully",
+                "calibration_id": calibration_id
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to store calibration data"
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error storing calibration data: {str(e)}"
+        }), 500
+
+@app.route("/get-calibration/<camera_id>")
+def get_calibration(camera_id):
+    """Get active calibration for a specific camera."""
+    try:
+        # Query for active calibration
+        calibration = calibration_collection.find_one(
+            {"camera_id": camera_id, "is_active": True},
+            {"_id": 0}
+        )
+        
+        if not calibration:
+            return jsonify({
+                "status": "error",
+                "message": f"No active calibration found for camera {camera_id}"
+            }), 404
+            
+        return jsonify({
+            "status": "success",
+            "calibration": calibration
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error retrieving calibration: {str(e)}"
+        }), 500
+
+@app.route("/get-calibration-history/<camera_id>")
+def get_calibration_history(camera_id):
+    """Get all calibrations for a specific camera."""
+    try:
+        # Query for all calibrations
+        calibrations = list(calibration_collection.find(
+            {"camera_id": camera_id},
+            {"_id": 0}
+        ).sort("timestamp", -1))
+        
+        return jsonify({
+            "status": "success",
+            "camera_id": camera_id,
+            "count": len(calibrations),
+            "calibrations": calibrations
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error retrieving calibration history: {str(e)}"
+        }), 500
+
+@app.route("/get-camera-with-calibration/<camera_id>")
+def get_camera_with_calibration(camera_id):
+    """Retrieve data for a specific camera including its calibration info."""
+    try:
+        # Query MongoDB for camera data
+        camera_data = list(camera_collection.find({"camera_id": camera_id}, {"_id": 0}))
+        
+        if not camera_data:
+            return jsonify({
+                "status": "error",
+                "message": f"No data found for camera {camera_id}"
+            }), 404
+            
+        # Get calibration ID from the first camera record
+        calibration_id = camera_data[0].get("calibration_id")
+        
+        if not calibration_id:
+            return jsonify({
+                "status": "success",
+                "message": f"Camera {camera_id} doesn't have an associated calibration",
+                "camera_id": camera_id,
+                "count": len(camera_data),
+                "data": camera_data,
+                "calibration": None
+            })
+        
+        # Query for calibration data
+        calibration = calibration_collection.find_one(
+            {"calibration_id": calibration_id},
+            {"_id": 0}
+        )
+        
+        return jsonify({
+            "status": "success",
+            "camera_id": camera_id,
+            "count": len(camera_data),
+            "data": camera_data,
+            "calibration": calibration
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error retrieving data: {str(e)}"
         }), 500
 
 if __name__ == "__main__":

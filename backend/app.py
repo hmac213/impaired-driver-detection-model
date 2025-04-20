@@ -10,6 +10,7 @@ from backend.routes.reports import reports_bp
 from backend.routes.camera import camera_bp
 from backend.routes.detection import detection_bp
 from backend.routes.auth import auth_bp
+from backend.routes.tracking import tracking_bp
 
 def create_app():
     app = Flask(__name__)
@@ -20,6 +21,7 @@ def create_app():
     app.register_blueprint(camera_bp, url_prefix='/api/camera')
     app.register_blueprint(detection_bp, url_prefix='/api/detection')
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
+    app.register_blueprint(tracking_bp, url_prefix='/api/tracking')
     
     @app.route('/')
     def index():
@@ -30,7 +32,8 @@ def create_app():
                 'reports': '/api/reports',
                 'camera': '/api/camera',
                 'detection': '/api/detection',
-                'auth': '/api/auth'
+                'auth': '/api/auth',
+                'tracking': '/api/tracking'
             }
         }
     
