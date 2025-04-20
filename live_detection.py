@@ -8,6 +8,7 @@ import json
 import numpy as np
 from pymongo import MongoClient
 import datetime
+import time
 from object_detection_pipeline.calibration import LaneDetector, VehicleDetector, setup_processing
 
 # Add warning filter to suppress deprecation warnings
@@ -340,6 +341,9 @@ def main():
         cap = cv2.VideoCapture(stream_url)
         if not cap.isOpened():
             raise RuntimeError("Cannot open video stream")
+            
+        # Set buffer size to minimize buffering
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         
         # Capture a frame for initial setup if needed
         ret, init_frame = cap.read()
@@ -371,93 +375,104 @@ def main():
         print("Starting object detection on live stream...")
         frame_count = 0
         
+        # Target fps for processing (adjust this value as needed)
+        target_fps = 10
+        frame_interval = 1.0 / target_fps
+        
         while True:
+            # Record start time for this iteration
+            start_time = time.time()
+            
+            # Clear buffer by reading frames until we get to the newest one
+            for _ in range(5):  # Limit to 5 attempts to avoid infinite loop
+                cap.grab()  # Just grab frame without decoding
+                
+            # Now read the latest frame
             ret, frame = cap.read()
             if not ret:
                 print("Stream ended or error")
                 break
             
-            # Process every 5th frame to reduce computational load
-            if frame_count % 5 == 0:
-                # Detect vehicles
-                detections = vehicle_detector.detect(frame)
+            # Process frame
+            # Detect vehicles
+            detections = vehicle_detector.detect(frame)
+            
+            # Update tracking
+            tracked_detections = tracker.update(detections, frame_count)
+            
+            # Draw ROI rectangle
+            if lane_detector.rectangle_points and len(lane_detector.rectangle_points) == 4:
+                points = np.array(lane_detector.rectangle_points, dtype=np.int32)
+                cv2.polylines(frame, [points], True, (0, 255, 0), 2)
+            
+            # Draw lane lines
+            if lane_detector.lanes:
+                height, width = frame.shape[:2]
+                for coeffs in lane_detector.lanes:
+                    # Draw polynomial curve
+                    y_points = np.linspace(0, height-1, 50)
+                    x_points = np.polyval(coeffs, y_points)
+                    
+                    # Filter points within image boundaries
+                    valid_indices = (x_points >= 0) & (x_points < width)
+                    y_valid = y_points[valid_indices].astype(np.int32)
+                    x_valid = x_points[valid_indices].astype(np.int32)
+                    
+                    # Draw lane line
+                    for i in range(len(x_valid) - 1):
+                        cv2.line(frame, (x_valid[i], y_valid[i]), 
+                                (x_valid[i+1], y_valid[i+1]), (0, 0, 255), 2)
+            
+            # Process tracked detections and draw bounding boxes
+            for det in tracked_detections:
+                x1, y1, x2, y2 = det['bbox']
+                center = det['center']
+                class_name = det['class']
+                confidence = det['confidence']
+                track_id = det.get('track_id', '')
                 
-                # Update tracking
-                tracked_detections = tracker.update(detections, frame_count)
+                # Get lane position
+                in_roi, relative_pos = lane_detector.is_point_in_rectangle(center)
                 
-                # Draw ROI rectangle
-                if lane_detector.rectangle_points and len(lane_detector.rectangle_points) == 4:
-                    points = np.array(lane_detector.rectangle_points, dtype=np.int32)
-                    cv2.polylines(frame, [points], True, (0, 255, 0), 2)
+                # Draw bounding box and information
+                color = (255, 0, 0)  # Default color: blue
+                if track_id in tracker.tracks and len(tracker.tracks[track_id]['history']) > 5:
+                    # Use green for stable tracks
+                    color = (0, 255, 0)
                 
-                # Draw lane lines
-                if lane_detector.lanes:
-                    height, width = frame.shape[:2]
-                    for coeffs in lane_detector.lanes:
-                        # Draw polynomial curve
-                        y_points = np.linspace(0, height-1, 50)
-                        x_points = np.polyval(coeffs, y_points)
-                        
-                        # Filter points within image boundaries
-                        valid_indices = (x_points >= 0) & (x_points < width)
-                        y_valid = y_points[valid_indices].astype(np.int32)
-                        x_valid = x_points[valid_indices].astype(np.int32)
-                        
-                        # Draw lane line
-                        for i in range(len(x_valid) - 1):
-                            cv2.line(frame, (x_valid[i], y_valid[i]), 
-                                    (x_valid[i+1], y_valid[i+1]), (0, 0, 255), 2)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 
-                # Process tracked detections and draw bounding boxes
-                for det in tracked_detections:
-                    x1, y1, x2, y2 = det['bbox']
-                    center = det['center']
-                    class_name = det['class']
-                    confidence = det['confidence']
-                    track_id = det.get('track_id', '')
+                # Draw reference point
+                cv2.circle(frame, center, 5, (0, 0, 255), -1)
+                
+                # Add text with detection info
+                label = f"{class_name} {track_id} {confidence:.2f}"
+                if in_roi:
+                    position_text = f"Pos: {relative_pos:.2f}"
+                    cv2.putText(frame, position_text, (x1, y1-10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     
-                    # Get lane position
-                    in_roi, relative_pos = lane_detector.is_point_in_rectangle(center)
+                    # Store detection in database
+                    detection_data = {
+                        "camera_id": camera_id,
+                        "track_id": str(track_id),
+                        "class": class_name,
+                        "frame_number": frame_count,
+                        "x": float(center[0]),
+                        "y": float(center[1]),
+                        "width": float(x2 - x1),
+                        "height": float(y2 - y1),
+                        # Fix the deprecation warning by using datetime.now(datetime.UTC)
+                        "timestamp": datetime.datetime.now(datetime.timezone.utc),
+                        "calibration_id": calibration["calibration_id"],
+                        "position_in_lane": float(relative_pos)
+                    }
                     
-                    # Draw bounding box and information
-                    color = (255, 0, 0)  # Default color: blue
-                    if track_id in tracker.tracks and len(tracker.tracks[track_id]['history']) > 5:
-                        # Use green for stable tracks
-                        color = (0, 255, 0)
-                    
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    
-                    # Draw reference point
-                    cv2.circle(frame, center, 5, (0, 0, 255), -1)
-                    
-                    # Add text with detection info
-                    label = f"{class_name} {track_id} {confidence:.2f}"
-                    if in_roi:
-                        position_text = f"Pos: {relative_pos:.2f}"
-                        cv2.putText(frame, position_text, (x1, y1-10), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                        
-                        # Store detection in database
-                        detection_data = {
-                            "camera_id": camera_id,
-                            "track_id": str(track_id),
-                            "class": class_name,
-                            "frame_number": frame_count,
-                            "x": float(center[0]),
-                            "y": float(center[1]),
-                            "width": float(x2 - x1),
-                            "height": float(y2 - y1),
-                            # Fix the deprecation warning by using datetime.now(datetime.UTC)
-                            "timestamp": datetime.datetime.now(datetime.timezone.utc),
-                            "calibration_id": calibration["calibration_id"],
-                            "position_in_lane": float(relative_pos)
-                        }
-                        
-                        # Uncomment to store each detection (may generate a lot of data)
-                        # camera_collection.insert_one(detection_data)
-                    
-                    cv2.putText(frame, label, (x1, y1-30), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                    # Uncomment to store each detection (may generate a lot of data)
+                    # camera_collection.insert_one(detection_data)
+                
+                cv2.putText(frame, label, (x1, y1-30), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
             
             # Display frame with detections
             cv2.imshow("Live Highway Feed with Object Detection", frame)
@@ -465,9 +480,33 @@ def main():
             # Increment frame counter
             frame_count += 1
             
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                print("Playback interrupted by user")
-                break
+            # Calculate elapsed time and sleep to maintain target FPS
+            elapsed_time = time.time() - start_time
+            sleep_time = max(0, frame_interval - elapsed_time)
+            
+            # Add FPS information to the frame
+            actual_fps = 1.0 / (elapsed_time + sleep_time if sleep_time > 0 else elapsed_time)
+            cv2.putText(frame, f"FPS: {actual_fps:.1f}", (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # Display the frame again with FPS info
+            cv2.imshow("Live Highway Feed with Object Detection", frame)
+            
+            # Wait for the calculated time to maintain frame rate
+            # Use a small value for waitKey during the sleep time for responsiveness
+            remaining_ms = int(sleep_time * 1000)
+            if remaining_ms <= 0:
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    print("Playback interrupted by user")
+                    break
+            else:
+                # Break the wait into smaller increments to maintain responsiveness
+                increment = 10  # 10ms increments
+                for _ in range(0, remaining_ms, increment):
+                    if cv2.waitKey(min(increment, remaining_ms)) & 0xFF == ord('q'):
+                        print("Playback interrupted by user")
+                        break
+                    remaining_ms -= increment
         
         cap.release()
         cv2.destroyAllWindows()
