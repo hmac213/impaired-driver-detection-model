@@ -8,5 +8,3 @@ venv
 output
 videos
 *.pt
-yolov3.cfg
-yolov3.weights
