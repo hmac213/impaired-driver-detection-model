@@ -1,139 +1,269 @@
 import cv2
 import numpy as np
-from ultralytics import YOLO
-from collections import defaultdict
-from filterpy.kalman import KalmanFilter
-import torch
+import os
 
 class VehicleDetector:
-    def __init__(self, model_path='yolov8x.pt', conf_threshold=0.5):
-        """Initialize the vehicle detector with YOLO model and tracking capabilities."""
-        self.model = YOLO(model_path)
-        self.conf_threshold = conf_threshold
-        self.tracks = defaultdict(list)  # Store tracking history
-        self.kalman_filters = {}  # Store Kalman filters for each tracked vehicle
+    def __init__(self, confidence_threshold=0.5):
+        """
+        Initialize the vehicle detector with background subtraction
         
-        # Vehicle classes we're interested in (from COCO dataset)
+        Args:
+            confidence_threshold: Detection confidence threshold
+        """
+        self.confidence_threshold = confidence_threshold
+        
+        # Initialize vehicle tracking
+        self.next_id = 1
+        self.tracks = {}  # Dictionary to store tracking info
+        self.max_disappeared = 15  # Maximum frames to keep tracking a disappeared object
+        self.disappeared = {}  # Count of frames an object has been missing
+        
+        # Vehicle classes in COCO dataset
         self.vehicle_classes = [2, 3, 5, 7]  # car, motorcycle, bus, truck
+        self.classes = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck"]
         
-    def init_kalman_filter(self):
-        """Initialize Kalman filter for vehicle tracking."""
-        kf = KalmanFilter(dim_x=4, dim_z=2)  # State: [x, y, dx, dy], Measurement: [x, y]
-        kf.F = np.array([[1, 0, 1, 0],
-                        [0, 1, 0, 1],
-                        [0, 0, 1, 0],
-                        [0, 0, 0, 1]])
-        kf.H = np.array([[1, 0, 0, 0],
-                        [0, 1, 0, 0]])
-        kf.R *= 10  # Measurement noise
-        kf.Q *= 0.1  # Process noise
+        # Initialize background subtractor
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=200, varThreshold=30, detectShadows=True)
         
-        # Initialize state covariance matrix
-        kf.P *= 1000
+        # Keep track of frame history for detection stability
+        self.frame_history = []
+        self.history_size = 5
         
-        # Initialize state vector
-        kf.x = np.zeros((4, 1))
+        # Minimum contour area to be considered a vehicle (adjust based on video resolution)
+        self.min_contour_area = 400
         
-        return kf
+        # Frame counter for periodic learning rate adjustment
+        self.frame_count = 0
+    
+    def detect_vehicles(self, frame):
+        """
+        Detect vehicles in a frame using background subtraction
         
-    def detect_and_track(self, frame):
-        """Detect vehicles in frame and update their tracks."""
-        results = self.model(frame, verbose=False)[0]
-        detections = []
-        
-        for det in results.boxes.data.cpu().numpy():
-            x1, y1, x2, y2, conf, cls = det[:6]
-            if int(cls) in self.vehicle_classes and conf > self.conf_threshold:
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
-                detections.append({
-                    'bbox': (int(x1), int(y1), int(x2), int(y2)),
-                    'center': (center_x, center_y),
-                    'confidence': conf,
-                    'class': int(cls)
-                })
-                
-        # Update tracks with Kalman filtering
-        self._update_tracks(detections)
-        
-        return detections, self.tracks
-        
-    def _update_tracks(self, detections):
-        """Update tracking information for detected vehicles."""
-        # If no existing tracks, initialize new ones
-        if not self.tracks:
-            for i, det in enumerate(detections):
-                self.tracks[i].append(det)
-                self.kalman_filters[i] = self.init_kalman_filter()
-                self.kalman_filters[i].x[:2, 0] = np.array([det['center'][0], det['center'][1]])
-            return
+        Args:
+            frame: Input frame
             
-        # Create cost matrix for matching
-        cost_matrix = np.zeros((len(detections), max(len(self.tracks), len(detections))))
-        for i, det in enumerate(detections):
-            for j in self.tracks.keys():
-                if j >= cost_matrix.shape[1]:
-                    continue
-                last_pos = self.tracks[j][-1]['center']
-                cost_matrix[i, j] = np.sqrt(
-                    (det['center'][0] - last_pos[0])**2 +
-                    (det['center'][1] - last_pos[1])**2
-                )
-                
-        # Match detections to existing tracks
-        matched_tracks = set()
-        matched_detections = set()
+        Returns:
+            detections: List of dictionaries with detection info
+        """
+        # Increment frame counter
+        self.frame_count += 1
         
-        # Sort detections by confidence
-        det_indices = list(range(len(detections)))
-        det_indices.sort(key=lambda i: detections[i]['confidence'], reverse=True)
+        # Convert to grayscale for processing
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        height, width = frame.shape[:2]
         
-        for i in det_indices:
-            if i >= len(detections):
+        # Apply Gaussian blur to reduce noise
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Apply background subtraction with shadow detection
+        fg_mask = self.bg_subtractor.apply(blurred, learningRate=0.002)
+        
+        # Remove shadows (value 127) and keep only foreground (value 255)
+        foreground_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)[1]
+        
+        # Apply morphological operations to remove noise and fill gaps
+        kernel_open = np.ones((3, 3), np.uint8)
+        kernel_close = np.ones((11, 11), np.uint8)
+        
+        # Opening (erosion followed by dilation) - removes small noise
+        opening = cv2.morphologyEx(foreground_mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
+        
+        # Closing (dilation followed by erosion) - fills small holes
+        closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel_close, iterations=1)
+        
+        # Additional dilation to merge nearby contours
+        dilation = cv2.dilate(closing, kernel_open, iterations=1)
+        
+        # Find contours of moving objects
+        contours, _ = cv2.findContours(dilation, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Create region of interest mask for the road area
+        # This helps exclude detections in irrelevant areas
+        roi_mask = np.zeros_like(dilation)
+        # Define polygon for the road area - adjust these points based on your video
+        road_polygon = np.array([
+            [(0, height), (width, height), (width*0.65, height*0.65), (width*0.35, height*0.65)]
+        ], dtype=np.int32)
+        cv2.fillPoly(roi_mask, road_polygon, 255)
+        
+        # Process contours and create detections
+        detections = []
+        for contour in contours:
+            # Filter small contours
+            area = cv2.contourArea(contour)
+            if area < self.min_contour_area:
                 continue
                 
-            # Find the best matching track for this detection
-            min_cost = float('inf')
-            best_track = None
+            # Get bounding box of contour
+            x, y, w, h = cv2.boundingRect(contour)
             
-            for j in self.tracks.keys():
-                if j in matched_tracks:
-                    continue
-                if j >= cost_matrix.shape[1]:
-                    continue
-                    
-                cost = cost_matrix[i, j]
-                if cost < min_cost and cost < 100:  # Distance threshold
-                    min_cost = cost
-                    best_track = j
-                    
-            if best_track is not None:
-                # Update existing track
-                self.tracks[best_track].append(detections[i])
-                matched_tracks.add(best_track)
-                matched_detections.add(i)
+            # Create detection with center point
+            center_x = x + w // 2
+            center_y = y + h // 2
+            
+            # Check if the center of the contour is within the road area
+            if roi_mask[center_y, center_x] == 0:
+                continue
                 
-                # Update Kalman filter
-                kf = self.kalman_filters[best_track]
-                kf.predict()
-                measurement = np.array([[detections[i]['center'][0]], 
-                                     [detections[i]['center'][1]]])
-                kf.update(measurement)
+            # Filter boxes by aspect ratio (to exclude non-vehicle objects)
+            aspect_ratio = float(w) / h
+            if not (0.5 <= aspect_ratio <= 3.0):
+                continue
                 
-        # Create new tracks for unmatched detections
-        for i in range(len(detections)):
-            if i not in matched_detections:
-                new_id = max(self.tracks.keys(), default=-1) + 1
-                self.tracks[new_id].append(detections[i])
-                self.kalman_filters[new_id] = self.init_kalman_filter()
-                self.kalman_filters[new_id].x[:2, 0] = np.array([detections[i]['center'][0],
-                                                                detections[i]['center'][1]])
+            # Filter by size relative to frame
+            relative_area = area / (height * width)
+            if relative_area < 0.0005 or relative_area > 0.05:
+                continue
+            
+            # Assign a vehicle class based on the aspect ratio and size
+            if aspect_ratio > 1.5:
+                class_idx = 2  # car
+            elif aspect_ratio > 0.8:
+                class_idx = 5 if area > 5000 else 2  # bus if large, car if smaller
+            else:
+                class_idx = 3  # motorcycle
+                
+            class_name = self.classes[class_idx] if class_idx < len(self.classes) else "unknown"
+            
+            # Calculate confidence based on area and relative position
+            confidence = min(1.0, area / 5000)
+            
+            detections.append({
+                'bbox': [x, y, x + w, y + h],
+                'confidence': confidence,
+                'class': class_idx,
+                'class_name': class_name,
+                'center': (center_x, center_y)
+            })
         
+        # Add current detections to history
+        self.frame_history.append(detections)
+        if len(self.frame_history) > self.history_size:
+            self.frame_history.pop(0)
+        
+        # Stabilize detections by considering detection history
+        if len(self.frame_history) >= 2:
+            # Use the current detections as the base
+            stable_detections = detections.copy()
+            
+            # Occasionally reset the background model to adapt to changes
+            if self.frame_count % 500 == 0:
+                self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+                    history=200, varThreshold=30, detectShadows=True)
+                
+        else:
+            stable_detections = detections
+        
+        return stable_detections
+    
+    def assign_tracks(self, detections):
+        """
+        Assign track IDs to detections
+        
+        Args:
+            detections: List of detection dictionaries
+            
+        Returns:
+            tracks: Dictionary of tracks updated
+        """
+        # If no existing tracks, create new tracks for all detections
+        if not self.tracks:
+            for det in detections:
+                self.tracks[self.next_id] = [det]
+                self.disappeared[self.next_id] = 0
+                self.next_id += 1
+            return self.tracks
+            
+        # If no current detections, increment disappeared count for all tracks
+        if not detections:
+            for object_id in list(self.disappeared.keys()):
+                self.disappeared[object_id] += 1
+                
+                # Remove track if disappeared for too many frames
+                if self.disappeared[object_id] > self.max_disappeared:
+                    del self.tracks[object_id]
+                    del self.disappeared[object_id]
+            return self.tracks
+        
+        # Calculate distances between existing tracks and new detections
+        distances = {}
+        for track_id, track_data in self.tracks.items():
+            if not track_data:
+                continue
+                
+            last_position = track_data[-1]['center']
+            
+            for i, det in enumerate(detections):
+                center = det['center']
+                dist = np.sqrt((last_position[0] - center[0])**2 + (last_position[1] - center[1])**2)
+                distances[(track_id, i)] = dist
+        
+        # Sort distances and assign detections to existing tracks
+        used_detections = set()
+        updated_tracks = set()
+        
+        if distances:
+            sorted_distances = sorted(distances.items(), key=lambda x: x[1])
+            
+            for (track_id, det_idx), dist in sorted_distances:
+                if det_idx not in used_detections and track_id not in updated_tracks and dist < 100:
+                    self.tracks[track_id].append(detections[det_idx])
+                    self.disappeared[track_id] = 0
+                    used_detections.add(det_idx)
+                    updated_tracks.add(track_id)
+        
+        # Create new tracks for unassigned detections
+        for i, det in enumerate(detections):
+            if i not in used_detections:
+                self.tracks[self.next_id] = [det]
+                self.disappeared[self.next_id] = 0
+                self.next_id += 1
+                
+        # Increment disappeared count for tracks with no match
+        for track_id in list(self.tracks.keys()):
+            if track_id not in updated_tracks:
+                self.disappeared[track_id] += 1
+                
+                # Remove track if disappeared for too many frames
+                if self.disappeared[track_id] > self.max_disappeared:
+                    del self.tracks[track_id]
+                    del self.disappeared[track_id]
+                    
+        return self.tracks
+    
+    def detect_and_track(self, frame):
+        """
+        Detect and track vehicles in a frame
+        
+        Args:
+            frame: Input frame
+            
+        Returns:
+            detections: List of detection dictionaries
+            tracks: Dictionary of tracks
+        """
+        detections = self.detect_vehicles(frame)
+        tracks = self.assign_tracks(detections)
+        return detections, tracks
+
     def draw_detections(self, frame, detections):
         """Draw bounding boxes and tracking information on frame."""
         for det in detections:
             x1, y1, x2, y2 = det['bbox']
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame, f"Conf: {det['confidence']:.2f}", (x1, y1 - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            # Different colors for different vehicle types
+            if det['class'] == 2:  # car
+                color = (0, 255, 0)  # green
+            elif det['class'] == 3:  # motorcycle
+                color = (255, 0, 0)  # blue
+            elif det['class'] == 5:  # bus
+                color = (0, 0, 255)  # red
+            elif det['class'] == 7:  # truck
+                color = (255, 255, 0)  # cyan
+            else:
+                color = (255, 0, 255)  # magenta
+                
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, f"{det['class_name']}: {det['confidence']:.2f}", (x1, y1 - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         return frame 

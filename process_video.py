@@ -69,12 +69,8 @@ class LaneSelector:
             cv2.circle(self.frame, (x, y), 5, (0, 255, 0), -1)
             cv2.imshow(self.window_name, self.frame)
             
-    def get_lane_points(self, num_lanes, has_barrier=False):
+    def get_lane_points(self, num_lines):
         """Get user-selected points for lane boundaries."""
-        num_lines = num_lanes + 1
-        if has_barrier:
-            num_lines += 1
-            
         cv2.namedWindow(self.window_name)
         cv2.setMouseCallback(self.window_name, self.mouse_callback)
         
@@ -89,7 +85,7 @@ class LaneSelector:
                 for j in range(len(line_points) - 1):
                     cv2.line(self.frame, line_points[j], line_points[j+1], (0, 255, 0), 2)
             
-            print(f"\nClick points for lane line {i+1} from bottom to top. Press 'Enter' when done with this line.")
+            print(f"\nClick points for lane line {i+1} of {num_lines} from bottom to top. Press 'Enter' when done with this line.")
             cv2.imshow(self.window_name, self.frame)
             
             while True:
@@ -203,12 +199,12 @@ def process_video(video_path, output_path=None, show_visualization=False):
         raise ValueError("Could not read first frame")
         
     # Get lane configuration from user
-    num_lanes = int(input("Enter the number of lanes: "))
-    has_barrier = input("Is there a barrier in the middle? (y/n): ").lower() == 'y'
+    num_lanes = int(input("Enter the number of lanes (e.g., 4): "))
+    num_lines = num_lanes + 1  # Number of lane boundaries = number of lanes + 1
     
     # Get lane boundary points
     lane_selector = LaneSelector(first_frame)
-    lane_points = lane_selector.get_lane_points(num_lanes, has_barrier)
+    lane_points = lane_selector.get_lane_points(num_lines)
     if lane_points is None:
         print("Lane selection cancelled")
         return None
@@ -320,10 +316,10 @@ def process_video(video_path, output_path=None, show_visualization=False):
 
 def main():
     parser = argparse.ArgumentParser(description='Process video for vehicle trajectory analysis')
-    parser.add_argument('video_path', help='Path to input video file (supports .mp4, .mov, and other formats)')
-    parser.add_argument('--output-video', help='Path to output visualization video (supports .mp4, .mov)')
+    parser.add_argument('video_path', help='Path to input video file', nargs='?', default='test.mp4')
+    parser.add_argument('--output-video', help='Path to output visualization video')
     parser.add_argument('--output-data', help='Path to save trajectory data CSV')
-    parser.add_argument('--show', action='store_true', help='Show visualization while processing')
+    parser.add_argument('--show', action='store_true', help='Show visualization while processing', default=True)
     args = parser.parse_args()
     
     # Convert paths to Path objects for better handling
@@ -333,7 +329,11 @@ def main():
     
     # Verify input file exists
     if not video_path.exists():
-        raise FileNotFoundError(f"Input video file not found: {video_path}")
+        print(f"Input video file not found: {video_path}")
+        video_path = Path('test.mp4')  # Try using test.mp4 as fallback
+        if not video_path.exists():
+            raise FileNotFoundError(f"Default video file not found: {video_path}")
+        print(f"Using default video file: {video_path}")
     
     # Process video
     df = process_video(video_path,
@@ -341,7 +341,7 @@ def main():
                       show_visualization=args.show)
                       
     # Save trajectory data
-    if output_data:
+    if output_data and df is not None:
         df.to_csv(output_data, index=False)
         print(f"Trajectory data saved to: {output_data}")
         
