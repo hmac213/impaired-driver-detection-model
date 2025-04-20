@@ -1,71 +1,102 @@
-# Vehicle Trajectory Analysis
+# Impaired Driver Detection Model
 
-This project provides tools for analyzing vehicle trajectories from video footage, with a focus on detecting potential drunk driving behavior. It combines YOLOv8 for vehicle detection and tracking with computer vision techniques for lane detection.
+This project implements vehicle tracking and lane detection in videos with support for homography-based road flattening to get accurate linear positions.
 
 ## Features
 
-- Vehicle detection and tracking using YOLOv8
-- Lane detection using computer vision techniques
-- Vehicle trajectory extraction relative to lane positions
-- Visualization options for debugging and analysis
-- Data export in CSV format for further analysis
-- Support for multiple video formats including .mp4 and .mov files
+- Lane line detection using manual boundary marking
+- Vehicle detection and tracking
+- Homography transformation for bird's-eye view perspective
+- Linear position calculation relative to lane boundaries
+- FPS calculation and display
+- Video processing and saving capabilities
 
-## Setup
+## Requirements
 
-1. Create and activate a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+Install the required dependencies:
 
-2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
 ## Usage
 
-Process a video file and extract trajectory data:
+You can run the vehicle tracking and lane detection with the following command:
 
 ```bash
-# For MP4 files
-python process_video.py path/to/video.mp4 --output-video output.mp4 --output-data trajectories.csv --show
-
-# For MOV files
-python process_video.py path/to/video.mov --output-video output.mov --output-data trajectories.csv --show
+python process_video.py [input_video.mp4] --output-video output_video.mp4 --output-data trajectory_data.csv --homography --homography-path calibration.npy
 ```
 
-Arguments:
-- `video_path`: Path to the input video file (supports .mp4, .mov, and other formats)
-- `--output-video`: (Optional) Path to save visualization video (supports .mp4, .mov)
-- `--output-data`: (Optional) Path to save trajectory data CSV
-- `--show`: (Optional) Show visualization while processing
+Command-line arguments:
+- `input_video.mp4` - Optional path to the input video file (defaults to test.mp4)
+- `--output-video output_video.mp4` - Path to save the visualization video
+- `--output-data trajectory_data.csv` - Path to save the trajectory data CSV
+- `--show` - Show visualization during processing (default: True)
+- `--homography` - Use homography transformation for bird's-eye view (default: True)
+- `--homography-path calibration.npy` - Path to save/load homography calibration
 
-## Output Data Format
+You can press 'q' at any time to exit the video playback.
 
-The trajectory data CSV contains the following columns:
-- `frame`: Frame number in the video
-- `time`: Time in seconds from the start of the video
-- `vehicle_id`: Unique identifier for each tracked vehicle
-- `x`, `y`: Vehicle center position in pixels
-- `relative_lane_pos`: Position relative to lane boundaries (0 = left boundary, 1 = right boundary, 0.5 = center)
-- `confidence`: Detection confidence score
-- `vehicle_class`: Vehicle class ID (2 = car, 3 = motorcycle, 5 = bus, 7 = truck)
+## Homography-based Road Flattening
 
-## Notes
+The project now includes homography-based road flattening, which:
+1. Allows selection of 4 points in the image to define the road plane
+2. Transforms the perspective to create a bird's-eye view
+3. Enables accurate linear position measurements
+4. Shows both original view and transformed bird's-eye view
 
-- The lane detection algorithm works best with clear lane markings and good lighting conditions
-- Vehicle tracking may occasionally lose track of vehicles during occlusions or rapid movements
-- The relative lane position calculation assumes the camera is mounted with a good view of the road
-- For best results, ensure the video footage has a clear view of both the vehicles and lane markings
-- When using .mov files on macOS, the output video will use the H.264 codec for better compatibility
+### How to Calibrate:
+1. When running for the first time, you'll be prompted to select 4 points defining the road plane
+   - Bottom-left corner of the road
+   - Bottom-right corner of the road
+   - Top-right corner of the road
+   - Top-left corner of the road
+2. After selecting the initial 4 points:
+   - Press 'Enter' to continue to rectangle adjustment mode
+   - Press 'a' to accept the points as they are without adjustment
+3. In rectangle adjustment mode:
+   - Drag any of the corner points to fine-tune their positions
+   - Press 'r' to reset to your original selections
+   - Press 'Enter' to confirm your adjustments
+   - Press 'Esc' to cancel adjustments and use the original points
+4. After calibration, the homography matrix can be saved for future use
 
-## Next Steps
+You can also run just the homography testing tool to see the transformation:
+```bash
+python test_homography.py [input_video.mp4] --output output_video.mp4 --calibration calibration.npy
+```
 
-1. Feed the extracted trajectory data into your neural network for drunk driving detection
-2. Consider adding additional features such as:
-   - Vehicle speed estimation
-   - Multi-lane tracking
-   - Turn signal detection
-   - Vehicle orientation tracking 
+## Lane Definition
+
+After homography calibration:
+1. You'll be asked to enter the number of lanes
+2. Then select points on the bird's-eye view image to define lane boundaries
+3. For each boundary, select points from bottom to top and press Enter when done
+
+## Trajectory Data
+
+The output CSV file includes:
+- Frame number and timestamp
+- Vehicle ID, position, and class
+- Lane number and relative position within the lane
+- Warped coordinates in the bird's-eye view
+
+## How It Works
+
+The impaired driver detection algorithm follows these steps:
+
+1. Apply homography transformation to obtain a bird's-eye view
+2. Define lane boundaries in the transformed view
+3. Detect vehicles in each frame
+4. Track vehicles across frames
+5. Transform vehicle positions to the bird's-eye view
+6. Calculate linear position within lane
+7. Record trajectory data for analysis
+
+## Visualization
+
+The output video shows:
+- Green lines indicating the detected lane boundaries
+- Colored boxes around detected vehicles
+- Numerical indicators showing lane position
+- A separate window with the bird's-eye view perspective 
