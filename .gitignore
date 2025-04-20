@@ -1,7 +1,10 @@
+simulation_data.csv
+test.mp4
+*.pth
 __pycache__
-output
+*.pyc
+.DS_Store
 venv
-.venv
+output
 videos
 *.pt
-.DS_Store
