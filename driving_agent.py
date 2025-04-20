@@ -23,11 +23,10 @@ class Agent:
         # add initial noise to position scaled by impairment
         half_width = self.road.width / 2
         noise_range = (0.2 + self.impairment_level * 0.2) * half_width
-        noise_x = random.uniform(-noise_range, noise_range)
-        # normal noise for y, then clamp within lane
+        # Only add noise to y position
         noise_y = random.gauss(0, noise_range)
         noise_y = max(-half_width, min(half_width, noise_y))
-        self.position = (self.start_point[0] + noise_x,
+        self.position = (self.start_point[0],  # x position starts at 0
                          self.start_point[1] + noise_y)
         # record trajectory for plotting
         self.history = [self.position]
@@ -198,3 +197,4 @@ def plot_position_heatmap(road, n_simulations=1000, impairment_level=0.5):
     plt.axhline(-road.width / 2, linestyle='--')
     plt.axis('equal')
     plt.show()
+
