@@ -1,0 +1,6 @@
+__pycache__
+output
+venv
+videos
+*.pt
+.DS_Store
