@@ -170,7 +170,8 @@ class Road:
         
     def calc_length(self):
         speed_ft_per_sec = self.speed_limit * 5280 / 3600
-        return speed_ft_per_sec * 5
+        simulation_time = random.uniform(2.5, 5.0)
+        return speed_ft_per_sec * simulation_time
 
 def plot_position_heatmap(road, n_simulations=1000, impairment_level=0.5):
     """
