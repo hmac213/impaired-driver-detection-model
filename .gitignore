@@ -1,6 +1,7 @@
 __pycache__
 output
 venv
+.venv
 videos
 *.pt
 .DS_Store
