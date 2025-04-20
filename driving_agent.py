@@ -1,14 +1,16 @@
 import math
 import random
+import numpy as np
 import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter
 
 class Agent:
     def __init__(
         self,
         road,
         impairment_level=0,
-        mass=3000,
-        max_lateral_force=10000
+        mass=95,
+        max_lateral_force=2400
     ):
         self.start_point = road.start_point
         self.goal_point = road.end_point
@@ -19,15 +21,19 @@ class Agent:
         self.mass = mass
         self.max_lateral_force = max_lateral_force
         # add initial noise to position scaled by impairment
-        noise_range = 0.1 + self.impairment_level * 0.2
+        half_width = self.road.width / 2
+        noise_range = (0.2 + self.impairment_level * 0.2) * half_width
         noise_x = random.uniform(-noise_range, noise_range)
-        noise_y = random.uniform(-noise_range, noise_range)
+        # normal noise for y, then clamp within lane
+        noise_y = random.gauss(0, noise_range)
+        noise_y = max(-half_width, min(half_width, noise_y))
         self.position = (self.start_point[0] + noise_x,
                          self.start_point[1] + noise_y)
         # record trajectory for plotting
         self.history = [self.position]
-        # initial heading: straight ahead along +x axis
-        self.heading = 0.0
+        # initial heading: straight ahead with a random ±5° offset
+        sd_angle_offset = math.radians(2)
+        self.heading = min(random.gauss(0, sd_angle_offset), math.radians(5))
         # steering interruption state
         self.steering_interrupted = False
         self.steering_rate = 0.0
@@ -50,17 +56,17 @@ class Agent:
             # chance to start a jerk: higher if more impaired
             half_width = self.road.width / 2
             distance_factor = max(0.0, 1.0 - abs(self.position[1]) / half_width)
-            if random.random() < self.impairment_level * 0.2 * distance_factor * dt:
+            if random.random() < self.impairment_level * 1.0 * distance_factor * dt:
                 # compute max angular rate from lateral force limit
                 speed_ft_s = self.speed * 5280 / 3600
                 lateral_accel_max = self.max_lateral_force / self.mass
                 base_rate = lateral_accel_max / speed_ft_s
-                # jerk intensity scaled by impairment and noise
-                jerk_intensity = random.uniform(-base_rate, base_rate) * (0.5 + self.impairment_level)
+                # jerk intensity capped by max lateral force (base_rate)
+                jerk_intensity = random.uniform(-base_rate * self.impairment_level, base_rate * self.impairment_level)
                 self.jerking = True
                 self.jerk_rate = jerk_intensity
                 # jerk duration scaled by impairment
-                self.jerk_duration = random.uniform(0.1, 0.3) * (1 + self.impairment_level)
+                self.jerk_duration = random.uniform(0.2, 0.5) * (1 + self.impairment_level)
                 self.jerk_timer = 0.0
         else:
             # apply jerk until duration elapses
@@ -81,7 +87,8 @@ class Agent:
                 # random steering drift rate scaled by impairment
                 self.steering_rate = random.uniform(-max_rate, max_rate) * (0.5 + self.impairment_level)
                 # reaction time longer for higher impairment
-                self.reaction_time = random.uniform(0.5, 1.5) * (1 + self.impairment_level)
+                base_reaction_time = random.gauss(0.25, 0.05)
+                self.reaction_time = base_reaction_time * (1 + self.impairment_level)
                 self.interrupt_timer = 0.0
                 self.steering_interrupted = True
         else:
@@ -168,8 +175,8 @@ class Road:
     
 road = Road()
 plt.figure()
-for i in range(1):
-    agent = Agent(road, impairment_level=1)
+for i in range(3):
+    agent = Agent(road, impairment_level=0.5)
     history = agent.run()
     xs, ys = zip(*history)
     plt.plot(xs, ys)
@@ -180,3 +187,31 @@ plt.axhline(road.width / 2, linestyle='--')
 plt.axhline(-road.width / 2, linestyle='--')
 plt.axis('equal')
 plt.show()
+
+def plot_position_heatmap(n_simulations=1000, impairment_level=0.5):
+    """
+    Run multiple simulations and plot a 2D heatmap of all agent positions.
+    """
+    all_positions = []
+    for _ in range(n_simulations):
+        agent = Agent(road, impairment_level=impairment_level)
+        history = agent.run()
+        all_positions.extend(history)
+    # separate x and y
+    xs, ys = zip(*all_positions)
+    plt.figure()
+    # compute 2D histogram and apply Gaussian smoothing for diffusion
+    H, xedges, yedges = np.histogram2d(xs, ys, bins=[100, 50])
+    H_smoothed = gaussian_filter(H, sigma=1)
+    extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
+    plt.imshow(H_smoothed.T, origin='lower', extent=extent, aspect='equal', cmap='hot')
+    plt.xlabel('X position (ft)')
+    plt.ylabel('Y position (ft)')
+    plt.title(f'Position Heatmap ({n_simulations} runs)')
+    plt.colorbar(label='Count')
+    plt.axhline(road.width / 2, linestyle='--')
+    plt.axhline(-road.width / 2, linestyle='--')
+    plt.axis('equal')
+    plt.show()
+
+plot_position_heatmap()
