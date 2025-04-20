@@ -37,6 +37,9 @@ def test_homography(video_path, output_path=None, calibration_path=None):
         homography_transformer.load_calibration(calibration_path)
     else:
         print("Please calibrate the homography transformation...")
+        print("1. Select 4 points: bottom-left, bottom-right, top-right, top-left")
+        print("2. After selecting points: Press Enter to adjust the rectangle or 'a' to accept as is")
+        print("3. In adjustment mode: Drag points to fine-tune, 'r' to reset, Enter to confirm")
         homography_transformer.calibrate(first_frame)
         
         # Save calibration if a path is provided
