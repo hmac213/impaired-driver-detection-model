@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import pandas as pd
 from vehicle_detector import VehicleDetector
+from homography_transformer import HomographyTransformer
 from pathlib import Path
 import argparse
 from tqdm import tqdm
@@ -69,12 +70,8 @@ class LaneSelector:
             cv2.circle(self.frame, (x, y), 5, (0, 255, 0), -1)
             cv2.imshow(self.window_name, self.frame)
             
-    def get_lane_points(self, num_lanes, has_barrier=False):
+    def get_lane_points(self, num_lines):
         """Get user-selected points for lane boundaries."""
-        num_lines = num_lanes + 1
-        if has_barrier:
-            num_lines += 1
-            
         cv2.namedWindow(self.window_name)
         cv2.setMouseCallback(self.window_name, self.mouse_callback)
         
@@ -89,7 +86,7 @@ class LaneSelector:
                 for j in range(len(line_points) - 1):
                     cv2.line(self.frame, line_points[j], line_points[j+1], (0, 255, 0), 2)
             
-            print(f"\nClick points for lane line {i+1} from bottom to top. Press 'Enter' when done with this line.")
+            print(f"\nClick points for lane line {i+1} of {num_lines} from bottom to top. Press 'Enter' when done with this line.")
             cv2.imshow(self.window_name, self.frame)
             
             while True:
@@ -125,7 +122,7 @@ def get_lane_boundaries(polynomials, y):
     x_coords = []
     for coeffs in polynomials:
         x = coeffs[0] * y**2 + coeffs[1] * y + coeffs[2]
-        x_coords.append(int(x))
+        x_coords.append(x)
     return x_coords
 
 def compute_lane_relative_position(vehicle_center, lane_polynomials, num_lanes):
@@ -181,7 +178,7 @@ def draw_lane_boundaries(frame, lane_polynomials):
         
     return frame
 
-def process_video(video_path, output_path=None, show_visualization=False):
+def process_video(video_path, output_path=None, show_visualization=False, use_homography=True, homography_path=None):
     """Process video and extract vehicle trajectory data."""
     # Initialize detector
     vehicle_detector = VehicleDetector()
@@ -197,24 +194,55 @@ def process_video(video_path, output_path=None, show_visualization=False):
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    # Read first frame for lane selection
+    # Read first frame for calibration
     ret, first_frame = cap.read()
     if not ret:
         raise ValueError("Could not read first frame")
-        
-    # Get lane configuration from user
-    num_lanes = int(input("Enter the number of lanes: "))
-    has_barrier = input("Is there a barrier in the middle? (y/n): ").lower() == 'y'
     
-    # Get lane boundary points
-    lane_selector = LaneSelector(first_frame)
-    lane_points = lane_selector.get_lane_points(num_lanes, has_barrier)
-    if lane_points is None:
-        print("Lane selection cancelled")
-        return None
+    # Setup homography transformer if requested
+    homography_transformer = None
+    if use_homography:
+        homography_transformer = HomographyTransformer()
+        if homography_path and Path(homography_path).exists():
+            # Load existing calibration
+            homography_transformer.load_calibration(homography_path)
+        else:
+            # Perform new calibration
+            print("Please calibrate the homography transformation...")
+            homography_transformer.calibrate(first_frame)
+            
+            # Save calibration if a path is provided
+            if homography_path:
+                homography_transformer.save_calibration(homography_path)
+    
+    # Get lane configuration from user
+    num_lanes = int(input("Enter the number of lanes (e.g., 4): "))
+    num_lines = num_lanes + 1  # Number of lane boundaries = number of lanes + 1
+    
+    # If using homography, use warped frame for lane selection
+    if homography_transformer and use_homography:
+        warped_frame = homography_transformer.warp_frame(first_frame)
         
-    # Fit polynomials to lane boundaries
-    lane_polynomials = fit_lane_polynomials(lane_points, frame_height)
+        # Get lane boundary points on warped frame
+        print("Select lane boundaries on the bird's-eye view image:")
+        lane_selector = LaneSelector(warped_frame)
+        lane_points = lane_selector.get_lane_points(num_lines)
+        if lane_points is None:
+            print("Lane selection cancelled")
+            return None
+            
+        # Fit polynomials to lane boundaries
+        lane_polynomials = fit_lane_polynomials(lane_points, warped_frame.shape[0])
+    else:
+        # Get lane boundary points on original frame
+        lane_selector = LaneSelector(first_frame)
+        lane_points = lane_selector.get_lane_points(num_lines)
+        if lane_points is None:
+            print("Lane selection cancelled")
+            return None
+            
+        # Fit polynomials to lane boundaries
+        lane_polynomials = fit_lane_polynomials(lane_points, frame_height)
     
     # Initialize output video writer if needed
     out = None
@@ -249,10 +277,21 @@ def process_video(video_path, output_path=None, show_visualization=False):
         
         # Process each detection
         for det in detections:
-            lane_num, relative_pos = compute_lane_relative_position(det['center'], lane_polynomials, num_lanes)
+            if use_homography and homography_transformer:
+                # Apply homography transformation to vehicle center
+                warped_center = homography_transformer.warp_point(det['center'])
+                
+                # Compute linear position in bird's-eye view
+                lane_num, relative_pos = compute_lane_relative_position(warped_center, lane_polynomials, num_lanes)
+                
+                # Store transformed coordinates
+                det['warped_center'] = warped_center
+            else:
+                # Regular position computation
+                lane_num, relative_pos = compute_lane_relative_position(det['center'], lane_polynomials, num_lanes)
             
             # Store trajectory data
-            trajectory_data.append({
+            trajectory_entry = {
                 'frame': frame_idx,
                 'time': frame_idx / fps,
                 'vehicle_id': None,  # Will be filled in post-processing
@@ -262,14 +301,39 @@ def process_video(video_path, output_path=None, show_visualization=False):
                 'relative_pos': relative_pos,  # Between -1 and 1 within lane
                 'confidence': det['confidence'],
                 'vehicle_class': det['class']
-            })
+            }
+            
+            # Add warped coordinates if using homography
+            if use_homography and homography_transformer:
+                trajectory_entry['warped_x'] = det['warped_center'][0]
+                trajectory_entry['warped_y'] = det['warped_center'][1]
+                
+            trajectory_data.append(trajectory_entry)
             
         # Visualize if requested
         if show_visualization or (output_path and out is not None):
             vis_frame = frame.copy()
             
             # Draw lane boundaries
-            vis_frame = draw_lane_boundaries(vis_frame, lane_polynomials)
+            if use_homography and homography_transformer:
+                # Create a warped visualization first
+                warped_vis = homography_transformer.warp_frame(vis_frame)
+                warped_vis = draw_lane_boundaries(warped_vis, lane_polynomials)
+                
+                # Draw warped points on warped visualization
+                for det in detections:
+                    if 'warped_center' in det:
+                        x, y = det['warped_center']
+                        cv2.circle(warped_vis, (int(x), int(y)), 5, (0, 0, 255), -1)
+                
+                # Show the warped view in a separate window
+                if show_visualization:
+                    cv2.imshow('Bird\'s-eye View', warped_vis)
+                
+                # Draw inverse-mapped lane boundaries on original frame
+                vis_frame = draw_mapped_lane_boundaries(vis_frame, lane_polynomials, homography_transformer)
+            else:
+                vis_frame = draw_lane_boundaries(vis_frame, lane_polynomials)
             
             # Draw detections and positions
             for det in detections:
@@ -279,7 +343,14 @@ def process_video(video_path, output_path=None, show_visualization=False):
                 
                 # Draw position indicator
                 x, y = det['center']
-                lane_num, rel_pos = compute_lane_relative_position(det['center'], lane_polynomials, num_lanes)
+                lane_num = det.get('lane_number', 0)
+                rel_pos = det.get('relative_pos', 0)
+                
+                if 'lane_number' not in det:
+                    if use_homography and homography_transformer:
+                        lane_num, rel_pos = compute_lane_relative_position(det['warped_center'], lane_polynomials, num_lanes)
+                    else:
+                        lane_num, rel_pos = compute_lane_relative_position(det['center'], lane_polynomials, num_lanes)
                 
                 # Color based on distance from center
                 color = (0, 255, 0) if abs(rel_pos) < 0.5 else (0, 165, 255)
@@ -318,30 +389,68 @@ def process_video(video_path, output_path=None, show_visualization=False):
             
     return df
 
+def draw_mapped_lane_boundaries(frame, lane_polynomials, homography_transformer):
+    """Draw lane boundary lines on the original frame by mapping from bird's-eye view."""
+    height = frame.shape[0]
+    width = frame.shape[1]
+    
+    # Create points along each lane polynomial in bird's-eye view
+    for coeffs in lane_polynomials:
+        # Sample points at different y values
+        y_coords = np.linspace(0, homography_transformer.warped_size[1] - 1, 20)
+        birdseye_points = []
+        
+        for y in y_coords:
+            x = coeffs[0] * y**2 + coeffs[1] * y + coeffs[2]
+            birdseye_points.append((int(x), int(y)))
+            
+        # Map points back to original image
+        original_points = []
+        for point in birdseye_points:
+            original_point = homography_transformer.unwarp_point(point)
+            if 0 <= original_point[0] < width and 0 <= original_point[1] < height:
+                original_points.append(original_point)
+                
+        if original_points:
+            # Draw lines between the mapped points
+            points_array = np.array(original_points, np.int32)
+            cv2.polylines(frame, [points_array], False, (0, 255, 0), 2)
+            
+    return frame
+
 def main():
     parser = argparse.ArgumentParser(description='Process video for vehicle trajectory analysis')
-    parser.add_argument('video_path', help='Path to input video file (supports .mp4, .mov, and other formats)')
-    parser.add_argument('--output-video', help='Path to output visualization video (supports .mp4, .mov)')
+    parser.add_argument('video_path', help='Path to input video file', nargs='?', default='test.mp4')
+    parser.add_argument('--output-video', help='Path to output visualization video')
     parser.add_argument('--output-data', help='Path to save trajectory data CSV')
-    parser.add_argument('--show', action='store_true', help='Show visualization while processing')
+    parser.add_argument('--show', action='store_true', help='Show visualization while processing', default=True)
+    parser.add_argument('--homography', action='store_true', help='Use homography transformation for bird\'s-eye view', default=True)
+    parser.add_argument('--homography-path', help='Path to save/load homography calibration')
     args = parser.parse_args()
     
     # Convert paths to Path objects for better handling
     video_path = Path(args.video_path)
     output_video = Path(args.output_video) if args.output_video else None
     output_data = Path(args.output_data) if args.output_data else None
+    homography_path = Path(args.homography_path) if args.homography_path else None
     
     # Verify input file exists
     if not video_path.exists():
-        raise FileNotFoundError(f"Input video file not found: {video_path}")
+        print(f"Input video file not found: {video_path}")
+        video_path = Path('test.mp4')  # Try using test.mp4 as fallback
+        if not video_path.exists():
+            raise FileNotFoundError(f"Default video file not found: {video_path}")
+        print(f"Using default video file: {video_path}")
     
     # Process video
     df = process_video(video_path,
                       output_path=output_video,
-                      show_visualization=args.show)
+                      show_visualization=args.show,
+                      use_homography=args.homography,
+                      homography_path=homography_path)
                       
     # Save trajectory data
-    if output_data:
+    if output_data and df is not None:
         df.to_csv(output_data, index=False)
         print(f"Trajectory data saved to: {output_data}")
         
