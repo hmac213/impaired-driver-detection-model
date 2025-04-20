@@ -172,23 +172,8 @@ class Road:
     def calc_length(self):
         speed_ft_per_sec = self.speed_limit * 5280 / 3600
         return speed_ft_per_sec * 5
-    
-road = Road()
-plt.figure()
-for i in range(3):
-    agent = Agent(road, impairment_level=0.5)
-    history = agent.run()
-    xs, ys = zip(*history)
-    plt.plot(xs, ys)
-plt.xlabel('X position (ft)')
-plt.ylabel('Y position (ft)')
-plt.title('Multiple Agent Trajectories')
-plt.axhline(road.width / 2, linestyle='--')
-plt.axhline(-road.width / 2, linestyle='--')
-plt.axis('equal')
-plt.show()
 
-def plot_position_heatmap(n_simulations=1000, impairment_level=0.5):
+def plot_position_heatmap(road, n_simulations=1000, impairment_level=0.5):
     """
     Run multiple simulations and plot a 2D heatmap of all agent positions.
     """
@@ -213,5 +198,3 @@ def plot_position_heatmap(n_simulations=1000, impairment_level=0.5):
     plt.axhline(-road.width / 2, linestyle='--')
     plt.axis('equal')
     plt.show()
-
-plot_position_heatmap()
