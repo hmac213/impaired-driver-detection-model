@@ -1,15 +1,20 @@
 # Impaired Driver Detection Model
 
-This project implements vehicle tracking and lane detection in videos with support for homography-based road flattening to get accurate linear positions.
+🚗 **Part of the Heq.tech Platform – AI-Powered Road Safety**
+
+This project is a core module of Heq.tech, a platform that uses real-time video analytics to detect impaired or dangerous drivers. Heq.tech analyzes CCTV traffic feeds and in-vehicle footage to identify erratic driving behavior and alert users to unsafe road conditions in their vicinity.
+
+This repository focuses on the **Impaired Driver Detection Model**, which uses vehicle tracking, lane detection, and trajectory analysis to generate time-series data that feeds into a GRU-based classifier to detect potentially impaired driving behavior.
 
 ## Features
 
-- Lane line detection using manual boundary marking
-- Vehicle detection and tracking
-- Homography transformation for bird's-eye view perspective
-- Linear position calculation relative to lane boundaries
-- FPS calculation and display
-- Video processing and saving capabilities
+- Lane line detection using manual boundary marking  
+- Vehicle detection and tracking  
+- Homography transformation for bird's-eye view perspective  
+- Linear position calculation relative to lane boundaries  
+- FPS calculation and display  
+- Video processing and saving capabilities  
+- Generates trajectory data for ML analysis (used in impairment classification)
 
 ## Requirements
 
