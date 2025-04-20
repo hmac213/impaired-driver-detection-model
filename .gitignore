@@ -1,6 +1,12 @@
 simulation_data.csv
 test.mp4
 *.pth
-__pycache__/
+__pycache__
 *.pyc
 .DS_Store
+venv
+output
+videos
+*.pt
+yolov3.cfg
+yolov3.weights
