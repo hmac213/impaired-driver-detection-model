@@ -51,7 +51,20 @@ The project now includes homography-based road flattening, which:
    - Bottom-right corner of the road
    - Top-right corner of the road
    - Top-left corner of the road
-2. After calibration, the homography matrix can be saved for future use
+2. After selecting the initial 4 points:
+   - Press 'Enter' to continue to rectangle adjustment mode
+   - Press 'a' to accept the points as they are without adjustment
+3. In rectangle adjustment mode:
+   - Drag any of the corner points to fine-tune their positions
+   - Press 'r' to reset to your original selections
+   - Press 'Enter' to confirm your adjustments
+   - Press 'Esc' to cancel adjustments and use the original points
+4. After calibration, the homography matrix can be saved for future use
+
+You can also run just the homography testing tool to see the transformation:
+```bash
+python test_homography.py [input_video.mp4] --output output_video.mp4 --calibration calibration.npy
+```
 
 ## Lane Definition
 
