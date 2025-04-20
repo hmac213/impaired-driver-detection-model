@@ -1,60 +1,46 @@
-import cv2
 import requests
 import xml.etree.ElementTree as ET
-import time
+import cv2
 
-# Dynamically retrieve the HLS playlist URL for "Hwy 80 at Northgate"
+# 1. Download the District 3 CCTV status XML
 status_url = "https://cwwp2.dot.ca.gov/data/d3/cctv/cctvStatusD03.xml"
 resp = requests.get(status_url)
 resp.raise_for_status()
+
+# 2. Parse it
 root = ET.fromstring(resp.content)
 
-stream_url = None
+# 3. Find the I‑80 Northgate camera and print its .m3u8 URL
 for cam in root.findall(".//cctv"):
-    # Extract the human-readable location and route
-    loc = cam.find("location/locationName").text or ""
-    route = cam.find("location/route").text or ""
-    # Match route I-80 and location containing "Northgate"
+    # Safely extract route and locationName from the <location> element
+    route_elem = cam.find("location/route")
+    route = route_elem.text if route_elem is not None else ""
+    loc_elem = cam.find("location/locationName")
+    loc = loc_elem.text if loc_elem is not None else ""
     if "I-80" in route and "Northgate" in loc:
-        # streamingVideoURL lives under imageData
-        elem = cam.find("imageData/streamingVideoURL")
-        if elem is not None and elem.text and "http" in elem.text:
-            stream_url = elem.text
+        url_elem = cam.find("imageData/streamingVideoURL")
+        if url_elem is not None and url_elem.text.startswith("http"):
+            stream_url = url_elem.text
+            print(f"Streaming URL: {stream_url}")
+            # Open the live HLS stream and display with OpenCV
+            cap = cv2.VideoCapture(stream_url)
+            if not cap.isOpened():
+                raise RuntimeError("Cannot open video stream")
+            
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    print("Stream ended or error")
+                    break
+                cv2.imshow("Live Highway Feed", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    print("Playback interrupted by user")
+                    break
+
+            cap.release()
+            cv2.destroyAllWindows()
+        else:
+            print("Found camera but no streaming URL element.")
         break
-if not stream_url:
-    raise RuntimeError("Could not find I-80 Northgate camera in District 3 XML")
-
-cap = cv2.VideoCapture(stream_url)
-if not cap.isOpened():
-    raise RuntimeError("Cannot open stream")
-
-# Throttle playback to real-time based on stream FPS
-fps = cap.get(cv2.CAP_PROP_FPS)
-if fps <= 0:
-    fps = 30.0  # fallback if FPS not available
-frame_interval = 1.0 / fps
-last_time = time.time()
-
-while True:
-    # Flush buffered frames to keep only the most recent
-    while cap.grab():
-        pass
-    ret, frame = cap.read()
-    if not ret:
-        print("Stream ended or error")
-        break
-
-    # Throttle to maintain real-time playback
-    now = time.time()
-    elapsed = now - last_time
-    if elapsed < frame_interval:
-        time.sleep(frame_interval - elapsed)
-    last_time = time.time()
-
-    # Display (or process) the frame
-    cv2.imshow("Northgate Live", frame)
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
-
-cap.release()
-cv2.destroyAllWindows()
+else:
+    raise RuntimeError("Could not find I‑80 Northgate camera in XML")
